@@ -40,6 +40,7 @@ class ClaudeRelayService {
     this.betaHeader = config.claude.betaHeader
     this.systemPrompt = config.claude.systemPrompt
     this.claudeCodeSystemPrompt = "You are Claude Code, Anthropic's official CLI for Claude."
+    this.nativePassthroughEnabled = process.env.CLAUDE_NATIVE_PASSTHROUGH === 'true'
     this.toolNameSuffix = null
     this.toolNameSuffixGeneratedAt = 0
     this.toolNameSuffixTtlMs = 60 * 60 * 1000
@@ -1201,6 +1202,12 @@ class ClaudeRelayService {
     // 使用 safeClone 替代 JSON.parse(JSON.stringify()) 提升性能
     const processedBody = safeClone(body)
 
+    // 调用方只有在 UA 和系统提示均匹配官方客户端时才传入 true。
+    // 保留客户端的 billing、metadata、缓存和工具内容，不影响上层权限与限流检查。
+    if (this.nativePassthroughEnabled && isRealClaudeCodeOverride === true) {
+      return processedBody
+    }
+
     processedBody.messages = this._patchOrphanedToolUse(processedBody.messages)
 
     // 验证并限制max_tokens参数
@@ -1583,10 +1590,10 @@ class ClaudeRelayService {
   }
 
   // 🔧 过滤客户端请求头
-  _filterClientHeaders(clientHeaders) {
+  _filterClientHeaders(clientHeaders, preserveNativeHeaders = false) {
     // 使用统一的 headerFilter 工具类
     // 同时伪装成正常的直接客户端请求，避免触发上游 API 的安全检查
-    return filterForClaude(clientHeaders)
+    return filterForClaude(clientHeaders, { preserveNativeHeaders })
   }
 
   // 🔧 准备请求头和 payload（抽离公共逻辑）
@@ -1599,16 +1606,21 @@ class ClaudeRelayService {
   ) {
     const { account, accountType, sessionHash, requestOptions = {}, isStream = false } = options
 
-    // 获取统一的 User-Agent
-    const unifiedUA = await this.captureAndGetUnifiedUserAgent(clientHeaders, account)
-
-    // 获取过滤后的客户端 headers
-    const filteredHeaders = this._filterClientHeaders(clientHeaders)
-
     const isRealClaudeCode =
       requestOptions.isRealClaudeCodeRequest === undefined
         ? this.isRealClaudeCodeRequest(body)
         : requestOptions.isRealClaudeCodeRequest === true
+
+    const nativePassthrough =
+      this.nativePassthroughEnabled &&
+      isRealClaudeCode &&
+      this._isClaudeCodeUserAgent(clientHeaders)
+
+    // 原生透传模式不使用账号缓存覆盖当前客户端的版本信息。
+    const unifiedUA = nativePassthrough
+      ? null
+      : await this.captureAndGetUnifiedUserAgent(clientHeaders, account)
+    const filteredHeaders = this._filterClientHeaders(clientHeaders, nativePassthrough)
 
     // 如果不是真实的 Claude Code 请求，需要使用从账户获取的 Claude Code headers
     let finalHeaders = { ...filteredHeaders }
@@ -1622,15 +1634,17 @@ class ClaudeRelayService {
     }
 
     // 应用请求身份转换
-    const extensionResult = this._applyRequestIdentityTransform(requestPayload, finalHeaders, {
-      account,
-      accountId,
-      accountType,
-      sessionHash,
-      clientHeaders,
-      requestOptions,
-      isStream
-    })
+    const extensionResult = nativePassthrough
+      ? { body: requestPayload, headers: finalHeaders }
+      : this._applyRequestIdentityTransform(requestPayload, finalHeaders, {
+          account,
+          accountId,
+          accountType,
+          sessionHash,
+          clientHeaders,
+          requestOptions,
+          isStream
+        })
 
     if (extensionResult.abortResponse) {
       return { abortResponse: extensionResult.abortResponse }
@@ -1683,7 +1697,16 @@ class ClaudeRelayService {
     // 根据模型和客户端传递的 anthropic-beta 动态设置 header
     const modelId = requestPayload?.model || body?.model
     const clientBetaHeader = this._getHeaderValueCaseInsensitive(clientHeaders, 'anthropic-beta')
-    headers['anthropic-beta'] = this._getBetaHeader(modelId, clientBetaHeader)
+    if (nativePassthrough) {
+      // 上游使用 OAuth 凭据，缺失时只补充对应 beta，不追加其他能力或重排客户端列表。
+      const oauthBeta = 'oauth-2025-04-20'
+      const hasOAuthBeta = clientBetaHeader?.split(',').some((beta) => beta.trim() === oauthBeta)
+      headers['anthropic-beta'] = hasOAuthBeta
+        ? clientBetaHeader
+        : [clientBetaHeader, oauthBeta].filter(Boolean).join(',')
+    } else {
+      headers['anthropic-beta'] = this._getBetaHeader(modelId, clientBetaHeader)
+    }
     return {
       requestPayload,
       bodyString,

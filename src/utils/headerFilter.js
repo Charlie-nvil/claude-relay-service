@@ -54,7 +54,7 @@ function filterForOpenAI(headers) {
  * 为 Claude/Anthropic API 过滤 headers
  * 使用白名单模式，只允许指定的 headers 通过
  */
-function filterForClaude(headers) {
+function filterForClaude(headers, { preserveNativeHeaders = false } = {}) {
   // 白名单模式：只允许以下 headers
   const allowedHeaders = [
     'accept',
@@ -79,6 +79,11 @@ function filterForClaude(headers) {
     'content-type',
     'connection'
   ]
+
+  if (preserveNativeHeaders) {
+    // 仅为官方客户端保留会话关联头，不放行客户端认证、CDN 或转发来源头。
+    allowedHeaders.push('x-claude-code-session-id', 'x-client-request-id')
+  }
 
   const filtered = {}
   Object.keys(headers || {}).forEach((key) => {
