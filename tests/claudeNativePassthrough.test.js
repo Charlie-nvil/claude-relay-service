@@ -128,6 +128,10 @@ it('preserves native headers while replacing authentication and transport framin
   expect(prepared.headers.host).toBe('api.anthropic.com')
   expect(prepared.headers['content-length']).toBe(String(Buffer.byteLength(prepared.bodyString)))
   expect(prepared.headers['accept-encoding']).toBe('identity')
+  expect(require('../src/utils/logger').info).toHaveBeenCalledWith('Claude forwarding policy', {
+    nativePassthrough: true,
+    isStream: false
+  })
   for (const name of [
     'x-api-key',
     'cookie',
@@ -189,6 +193,10 @@ it.each([undefined, 'false'])('keeps legacy behavior when the flag is %s', async
   )
   expect(prepared.headers).not.toHaveProperty('x-claude-code-session-id')
   expect(require('../src/services/requestIdentityService').transform).toHaveBeenCalledTimes(1)
+  expect(require('../src/utils/logger').info).not.toHaveBeenCalledWith(
+    'Claude forwarding policy',
+    expect.anything()
+  )
 })
 
 it('keeps third-party client transformations when native forwarding is enabled', async () => {
@@ -203,4 +211,8 @@ it('keeps third-party client transformations when native forwarding is enabled',
   )
   expect(prepared.headers).not.toHaveProperty('x-claude-code-session-id')
   expect(require('../src/services/requestIdentityService').transform).toHaveBeenCalledTimes(1)
+  expect(require('../src/utils/logger').info).toHaveBeenCalledWith('Claude forwarding policy', {
+    nativePassthrough: false,
+    isStream: false
+  })
 })

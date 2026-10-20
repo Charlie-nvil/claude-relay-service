@@ -1616,6 +1616,11 @@ class ClaudeRelayService {
       isRealClaudeCode &&
       this._isClaudeCodeUserAgent(clientHeaders)
 
+    if (this.nativePassthroughEnabled) {
+      // 只记录本次实际选中的转发策略，不记录请求体、凭据或客户端标识。
+      logger.info('Claude forwarding policy', { nativePassthrough, isStream })
+    }
+
     // 原生透传模式不使用账号缓存覆盖当前客户端的版本信息。
     const unifiedUA = nativePassthrough
       ? null
